@@ -1,6 +1,19 @@
 # ssh-agent-crypt
 
-File encryption and decryption backed by a running SSH agent (`SSH_AGENT_SOCK` / `SSH_AUTH_SOCK`) with support for **multiple SSH keys** that can be **added and removed at any time** — without ever exposing secrets on the command line.
+[![CI](https://github.com/moses70/ssh-agent-crypt/actions/workflows/ci.yml/badge.svg)](https://github.com/moses70/ssh-agent-crypt/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+
+Multi-key file encryption and decryption backed by a running SSH agent (`SSH_AGENT_SOCK` / `SSH_AUTH_SOCK`) — **add or remove SSH keys at any time** without ever exposing secrets on the command line.
+
+## Why `ssh-agent-crypt`?
+
+Most file encryption tools either require keeping an unencrypted private key on disk (like `age` keys for SOPS), force you to pass private key files directly (bypassing `ssh-agent` forwarding or hardware/passphrase-protected agent sessions), or require managing a full GPG keyring.
+
+`ssh-agent-crypt` talks directly to your already-running `ssh-agent` Unix socket (`SSH_AGENT_SOCK` / `SSH_AUTH_SOCK`):
+- Private keys **never leave `ssh-agent`** and are never read from disk by this tool.
+- Multiple SSH keys can be **added (`add-key`) or removed (`remove-key`) at any time** using an envelope key-slot format.
+- Pairs cleanly with **Ansible + SOPS / `age`** (`SOPS_AGE_KEY_CMD` / `community.sops` `age_key_cmd`) so your `age` private key never has to sit on disk in plaintext.
 
 ## Features
 
@@ -29,7 +42,12 @@ File encryption and decryption backed by a running SSH agent (`SSH_AGENT_SOCK` /
 
 ## Installation (`/usr/local/bin` + `ssc` alias + Tab Completion)
 
+### Option 1: From a local clone (recommended — includes `ssc` alias + Bash completion)
+
 ```bash
+git clone https://github.com/moses70/ssh-agent-crypt.git
+cd ssh-agent-crypt
+
 # Preview planned changes first (no files modified)
 ./ssh-agent-crypt install --dry-run
 
@@ -40,6 +58,14 @@ source ~/.bashrc
 # Verify both the installed binary and the alias
 ssh-agent-crypt --version
 ssc --version
+```
+
+### Option 2: With `pipx` or `uv tool`
+
+```bash
+pipx install git+https://github.com/moses70/ssh-agent-crypt.git
+# or:
+uv tool install git+https://github.com/moses70/ssh-agent-crypt.git
 ```
 
 Tab completion works for both `ssh-agent-crypt` and the `ssc` alias, completing subcommands, flags, file paths, live SSH agent keys (for `--key` / `--unlock-key`), and authorized file key slots (for `remove-key <file> --key`).
@@ -283,3 +309,35 @@ HEADER_JSON  ( N bytes) : Canonical UTF-8 JSON (version, cipher, kdf, file_id, n
 HEADER_MAC   (32 bytes) : HMAC-SHA256(header_mac_key, MAGIC || HEADER_LEN || HEADER_JSON)
 PAYLOAD      (stream)   : Sequence of uint32(ct_len) || AES-256-GCM(payload_key, nonce, plaintext, aad)
 ```
+
+## Security Model, Limitations & Comparison
+
+### How KEK derivation via `ssh-agent` works
+
+The OpenSSH agent protocol (`draft-miller-ssh-agent`) deliberately does not expose private keys or a decryption/ECDH RPC — it only lists public keys and signs data. `ssh-agent-crypt` therefore uses **envelope encryption** with a random 256-bit DEK and derives each slot's Key Encryption Key (KEK) from a **deterministic `ssh-agent` signature**:
+
+1. Each key slot stores a unique random 32-byte `challenge`.
+2. `ssh-agent` signs `b"ssh-agent-crypt-v1:kek-challenge\x00" || file_id || challenge || sha256(key_blob)` (domain-separated to prevent cross-protocol signature reuse).
+3. `KEK = HKDF-SHA256(ikm=signature, salt=challenge, info="ssh-agent-crypt-v1:kek:" || sha256(key_blob))`.
+4. The DEK is wrapped with `AES-256-GCM(KEK)` using slot-bound AAD; the header is authenticated with `HMAC-SHA256` using an independent HKDF subkey derived from the DEK.
+
+### Honest Limitations
+
+- **Agent trust boundary**: Any local process able to connect to `SSH_AGENT_SOCK` while an authorized key is unlocked in `ssh-agent` can ask the agent to sign challenges and decrypt files — identical to how `ssh` itself trusts `ssh-agent`. Use `ssh-add -c` (confirm) or `ssh-add -t <seconds>` (timeout) if you want tighter session controls.
+- **Deterministic keys only**: Only deterministic signature algorithms (`ssh-ed25519` and `ssh-rsa` with `rsa-sha2-512`) can derive a reproducible KEK. Non-deterministic keys (`ecdsa-sha2-*`, FIDO2 `sk-*`) are automatically detected via a double-sign check and rejected.
+- **Adding a key requires that key in an agent**: Because the new key must sign its challenge to derive its KEK, you cannot add a key using only its `.pub` file offline (unlike pure asymmetric public-key encryption such as `age -R`).
+- **Revocation scope**: `remove-key --rekey` rotates the DEK and re-encrypts the file so removed keys cannot decrypt the new ciphertext, but it cannot erase plaintext a previously authorized user already copied. Always rotate underlying secrets when offboarding.
+
+### Comparison with Related Tools
+
+| Tool | Uses `ssh-agent` directly (no private key file read) | Multi-key add/remove without re-encrypting payload | Zero secrets on CLI / disk | Works seamlessly with SOPS `SOPS_AGE_KEY_CMD` |
+| --- | :---: | :---: | :---: | :---: |
+| **`ssh-agent-crypt`** | Yes | Yes (`add-key` / `remove-key`) | Yes | Yes |
+| **`age` (`-R` / `-i`)** | No (reads private key file directly) | No (re-encrypts on recipient change) | Needs key file or passphrase | Native `age` backend |
+| **GnuPG (`gpg`)** | Via `gpg-agent` (separate keyring) | No | Yes | Native `pgp` backend |
+| **`ansible-vault`** | No (password / vault-id based) | Password rotation re-encrypts | Via vault password script | N/A |
+
+## License
+
+Released under the [MIT License](LICENSE).
+
