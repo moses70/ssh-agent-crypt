@@ -14,6 +14,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLI_BIN = REPO_ROOT / "ssh-agent-crypt"
@@ -27,6 +28,7 @@ from ssh_agent_crypt.agent import (  # noqa: E402
     parse_openssh_pubkey_file,
 )
 from ssh_agent_crypt.crypto import MAGIC  # noqa: E402
+from ssh_agent_crypt.installer import install_tool  # noqa: E402
 
 
 class IsolatedSSHAgent:
@@ -519,6 +521,153 @@ class TestSSHAgentCrypt(unittest.TestCase):
         # 5. Trailing garbage appended after valid final chunk
         r = self.run_cli(["verify", "-"], stdin_bytes=valid + b"\x00\x00")
         self.assertNotEqual(r.returncode, 0)
+
+    def test_install_command_and_bashrc_alias(self) -> None:
+        fake_bin = self.tmpdir / "local_bin"
+        fake_bashrc = self.tmpdir / ".bashrc"
+        fake_bashrc.write_text("# existing bashrc\nexport FOO=bar\n", encoding="utf-8")
+
+        # 1. Dry-run shows sudo command and does not modify anything
+        dry = self.run_cli(
+            [
+                "install",
+                "--dry-run",
+                "--bin-dir",
+                "/usr/local/bin",
+                "--bashrc",
+                str(fake_bashrc),
+            ]
+        )
+        self.assertEqual(dry.returncode, 0, dry.stderr.decode())
+        self.assertIn("sudo ln -sfn", dry.stderr.decode())
+        self.assertIn("would-added", dry.stderr.decode())
+        self.assertNotIn("alias ssc=", fake_bashrc.read_text(encoding="utf-8"))
+
+        # 2. Real install into temp bin_dir (--no-sudo) + temp .bashrc
+        res = self.run_cli(
+            [
+                "install",
+                "--no-sudo",
+                "--bin-dir",
+                str(fake_bin),
+                "--bashrc",
+                str(fake_bashrc),
+            ]
+        )
+        self.assertEqual(res.returncode, 0, res.stderr.decode())
+        installed_bin = fake_bin / "ssh-agent-crypt"
+        self.assertTrue(installed_bin.is_symlink())
+        self.assertEqual(installed_bin.resolve(), CLI_BIN.resolve())
+
+        # Installed symlink executes properly
+        ver = subprocess.run(
+            [str(installed_bin), "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        self.assertIn(b"ssh-agent-crypt", ver.stdout)
+
+        # Alias block added cleanly to .bashrc
+        rc_content = fake_bashrc.read_text(encoding="utf-8")
+        self.assertIn("alias ssc='ssh-agent-crypt'", rc_content)
+        self.assertEqual(rc_content.count("alias ssc="), 1)
+
+        # Sourcing .bashrc + PATH makes `ssc` work in bash
+        bash_env = os.environ.copy()
+        bash_env["PATH"] = f"{fake_bin}:{bash_env.get('PATH', '')}"
+        bash_check = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"shopt -s expand_aliases\nsource '{fake_bashrc}'\nssc --version\n",
+            ],
+            env=bash_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        self.assertIn(b"ssh-agent-crypt", bash_check.stdout)
+
+        # 3. Re-running install is idempotent (unchanged, no duplicate alias)
+        res2 = self.run_cli(
+            [
+                "install",
+                "--no-sudo",
+                "--bin-dir",
+                str(fake_bin),
+                "--bashrc",
+                str(fake_bashrc),
+            ]
+        )
+        self.assertEqual(res2.returncode, 0, res2.stderr.decode())
+        self.assertIn("unchanged", res2.stderr.decode())
+        self.assertEqual(fake_bashrc.read_text(encoding="utf-8").count("alias ssc="), 1)
+
+        # 4. Conflicting unmanaged alias fails without --force, succeeds with --force
+        conflict_rc = self.tmpdir / ".bashrc_conflict"
+        conflict_rc.write_text("alias ssc='other-tool'\n", encoding="utf-8")
+        res_conflict = self.run_cli(
+            [
+                "install",
+                "--no-sudo",
+                "--bin-dir",
+                str(fake_bin),
+                "--bashrc",
+                str(conflict_rc),
+            ]
+        )
+        self.assertNotEqual(res_conflict.returncode, 0)
+        self.assertIn("already exists", res_conflict.stderr.decode())
+
+        res_force = self.run_cli(
+            [
+                "install",
+                "--no-sudo",
+                "--force",
+                "--bin-dir",
+                str(fake_bin),
+                "--bashrc",
+                str(conflict_rc),
+            ]
+        )
+        self.assertEqual(res_force.returncode, 0, res_force.stderr.decode())
+        self.assertIn("alias ssc='ssh-agent-crypt'", conflict_rc.read_text(encoding="utf-8"))
+
+        # 5. Unsafe alias name rejected
+        res_bad = self.run_cli(
+            [
+                "install",
+                "--no-sudo",
+                "--bin-dir",
+                str(fake_bin),
+                "--bashrc",
+                str(fake_bashrc),
+                "--alias",
+                "ssc;echo",
+            ]
+        )
+        self.assertNotEqual(res_bad.returncode, 0)
+
+        # 6. Verify sudo invocation arguments via mock
+        sudo_rc = self.tmpdir / ".bashrc_sudo"
+        with (
+            mock.patch("ssh_agent_crypt.installer.shutil.which", return_value="/usr/bin/sudo"),
+            mock.patch("ssh_agent_crypt.installer.os.geteuid", return_value=1000),
+            mock.patch("ssh_agent_crypt.installer.subprocess.run") as mock_run,
+        ):
+            result = install_tool(
+                bin_dir=Path("/usr/local/bin"),
+                bashrc_path=sudo_rc,
+                alias_name="ssc",
+                use_sudo=True,
+            )
+            self.assertTrue(result.used_sudo)
+            mock_run.assert_any_call(
+                ["sudo", "ln", "-sfn", str(CLI_BIN.resolve()), "/usr/local/bin/ssh-agent-crypt"],
+                check=True,
+            )
+            self.assertIn("alias ssc='ssh-agent-crypt'", sudo_rc.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

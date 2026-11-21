@@ -27,6 +27,27 @@ Dateiverschlüsselung und -entschlüsselung über einen laufenden SSH-Agent (`SS
 - Python-Paket `cryptography`
 - Laufender `ssh-agent` mit gesetzter Variable `SSH_AGENT_SOCK` (oder `SSH_AUTH_SOCK`)
 
+## Installation (`/usr/local/bin` + Alias `ssc`)
+
+```bash
+# Optional vorab prüfen (Dry-Run ohne Änderungen)
+./ssh-agent-crypt install --dry-run
+
+# In /usr/local/bin per sudo verlinken und Alias 'ssc' in ~/.bashrc eintragen
+./ssh-agent-crypt install
+source ~/.bashrc
+
+# Danach überall als `ssh-agent-crypt` oder kurz als `ssc` nutzbar
+ssc --version
+```
+
+Weitere Optionen für `install`:
+- `--bin-dir PATH` (Standard: `/usr/local/bin`)
+- `--bashrc PATH` (Standard: `~/.bashrc`)
+- `--alias NAME` (Standard: `ssc`) oder `--no-alias`
+- `--no-sudo` (z. B. für `~/.local/bin`)
+- `--dry-run` (zeigt geplante Aktionen ohne Änderungen)
+
 ## Verwendung
 
 ### 1. Geladene Keys im SSH-Agent anzeigen
@@ -91,7 +112,8 @@ cat geheim.txt | ./ssh-agent-crypt encrypt --all-keys -o geheim.txt.senc
 │   ├── __init__.py
 │   ├── agent.py                  # SSH-Agent-Protokoll-Client (SSH_AGENT_SOCK / SSH_AUTH_SOCK)
 │   ├── crypto.py                 # Envelope-Encryption, Key Slots, Header MAC, Chunked AES-256-GCM
-│   └── cli.py                    # CLI-Subkommandos, atomares Schreiben, 0600-Rechte
+│   ├── cli.py                    # CLI-Subkommandos, atomares Schreiben, 0600-Rechte
+│   └── installer.py              # Installation in /usr/local/bin (per sudo) & Alias in ~/.bashrc
 ├── scripts/
 │   ├── run-tests.sh              # Startet die vollständige Test-Suite
 │   └── demo-workflow.sh          # Isolierte End-to-End-Demo mit eigenem ssh-agent

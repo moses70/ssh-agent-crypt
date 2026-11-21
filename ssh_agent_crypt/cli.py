@@ -43,6 +43,7 @@ from .crypto import (
     remove_keys_from_stream,
     unlock_dek,
 )
+from .installer import InstallError, install_tool
 
 
 def _info(msg: str, quiet: bool = False) -> None:
@@ -464,6 +465,44 @@ def _cmd_rekey(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_install(args: argparse.Namespace) -> int:
+    result = install_tool(
+        bin_dir=Path(args.bin_dir),
+        command_name=args.name,
+        bashrc_path=None if args.no_alias else Path(args.bashrc),
+        alias_name=None if args.no_alias else args.alias,
+        use_sudo=not args.no_sudo,
+        force=args.force,
+        dry_run=args.dry_run,
+    )
+
+    prefix = "[dry-run] " if result.dry_run else ""
+    if result.dry_run:
+        _info(f"{prefix}Binary : {result.bin_action}", quiet=args.quiet)
+    else:
+        sudo_note = " (via sudo)" if result.used_sudo else ""
+        _info(
+            f"Installed {result.target_bin} -> {result.source_script}{sudo_note}",
+            quiet=args.quiet,
+        )
+
+    if result.bashrc_path is not None and result.alias_name is not None:
+        _info(
+            f"{prefix}Alias  : '{result.alias_name}' -> '{args.name}' in "
+            f"{result.bashrc_path} ({result.alias_action})",
+            quiet=args.quiet,
+        )
+        if not result.dry_run and result.alias_action in ("added", "updated"):
+            _info(
+                f"Run 'source {result.bashrc_path}' or open a new shell to activate alias '{result.alias_name}'.",
+                quiet=args.quiet,
+            )
+    else:
+        _info(f"{prefix}Alias  : skipped (--no-alias)", quiet=args.quiet)
+
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ssh-agent-crypt",
@@ -670,6 +709,58 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_rk.set_defaults(func=_cmd_rekey)
 
+    # install
+    p_inst = sub.add_parser(
+        "install",
+        help="Install ssh-agent-crypt into /usr/local/bin (via sudo) and add alias 'ssc' to ~/.bashrc.",
+    )
+    p_inst.add_argument(
+        "--bin-dir",
+        default="/usr/local/bin",
+        metavar="PATH",
+        help="Target directory for the installed symlink (default: /usr/local/bin).",
+    )
+    p_inst.add_argument(
+        "--name",
+        default="ssh-agent-crypt",
+        metavar="NAME",
+        help="Installed executable name in --bin-dir (default: ssh-agent-crypt).",
+    )
+    p_inst.add_argument(
+        "--bashrc",
+        default="~/.bashrc",
+        metavar="PATH",
+        help="Shell rc file to receive the alias (default: ~/.bashrc).",
+    )
+    p_inst.add_argument(
+        "--alias",
+        default="ssc",
+        metavar="NAME",
+        help="Shell alias name to add to --bashrc (default: ssc).",
+    )
+    p_inst.add_argument(
+        "--no-alias",
+        action="store_true",
+        help="Skip adding the shell alias to ~/.bashrc.",
+    )
+    p_inst.add_argument(
+        "--no-sudo",
+        action="store_true",
+        help="Install without sudo (for writable directories such as ~/.local/bin).",
+    )
+    p_inst.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show planned install actions without modifying any files.",
+    )
+    p_inst.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Add managed alias even if an unmanaged alias with the same name exists.",
+    )
+    p_inst.set_defaults(func=_cmd_install)
+
     return parser
 
 
@@ -688,6 +779,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         CryptoFormatError,
         DecryptionError,
         KeyManagementError,
+        InstallError,
         FileExistsError,
         FileNotFoundError,
         PermissionError,
