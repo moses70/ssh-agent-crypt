@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Temporary / local test artifacts
+*.tmp
+*.bak
+.tmp/
+tmp/
+.ssh-agent-crypt-*
+
+# Local test keys & runtime sockets (never commit private keys or sockets)
+*.key
+*.pem
+*.sock
+test-keys/
