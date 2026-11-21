@@ -568,19 +568,25 @@ class TestSSHAgentCrypt(unittest.TestCase):
         )
         self.assertIn(b"ssh-agent-crypt", ver.stdout)
 
-        # Alias block added cleanly to .bashrc
+        # Alias block + bash completion added cleanly to .bashrc
         rc_content = fake_bashrc.read_text(encoding="utf-8")
         self.assertIn("alias ssc='ssh-agent-crypt'", rc_content)
+        self.assertIn("completion bash", rc_content)
         self.assertEqual(rc_content.count("alias ssc="), 1)
 
-        # Sourcing .bashrc + PATH makes `ssc` work in bash
+        # Sourcing .bashrc + PATH makes `ssc` and completion work in bash
         bash_env = os.environ.copy()
         bash_env["PATH"] = f"{fake_bin}:{bash_env.get('PATH', '')}"
         bash_check = subprocess.run(
             [
                 "bash",
                 "-c",
-                f"shopt -s expand_aliases\nsource '{fake_bashrc}'\nssc --version\n",
+                (
+                    "shopt -s expand_aliases\n"
+                    f"source '{fake_bashrc}'\n"
+                    "ssc --version\n"
+                    "complete -p ssc\n"
+                ),
             ],
             env=bash_env,
             stdout=subprocess.PIPE,
@@ -588,6 +594,31 @@ class TestSSHAgentCrypt(unittest.TestCase):
             check=True,
         )
         self.assertIn(b"ssh-agent-crypt", bash_check.stdout)
+        self.assertIn(b"_ssh_agent_crypt_completions ssc", bash_check.stdout)
+
+        # Legacy managed block upgrades cleanly in-place without duplication
+        legacy_rc = self.tmpdir / ".bashrc_legacy"
+        legacy_rc.write_text(
+            "# >>> ssh-agent-crypt alias >>>\n"
+            "alias ssc='ssh-agent-crypt'\n"
+            "# <<< ssh-agent-crypt alias <<<\n",
+            encoding="utf-8",
+        )
+        res_upg = self.run_cli(
+            [
+                "install",
+                "--no-sudo",
+                "--bin-dir",
+                str(fake_bin),
+                "--bashrc",
+                str(legacy_rc),
+            ]
+        )
+        self.assertEqual(res_upg.returncode, 0, res_upg.stderr.decode())
+        self.assertIn("updated", res_upg.stderr.decode())
+        upg_content = legacy_rc.read_text(encoding="utf-8")
+        self.assertEqual(upg_content.count("alias ssc="), 1)
+        self.assertIn("completion bash", upg_content)
 
         # 3. Re-running install is idempotent (unchanged, no duplicate alias)
         res2 = self.run_cli(
@@ -668,6 +699,77 @@ class TestSSHAgentCrypt(unittest.TestCase):
                 check=True,
             )
             self.assertIn("alias ssc='ssh-agent-crypt'", sudo_rc.read_text(encoding="utf-8"))
+
+    def test_shell_completion_subcommands_and_dynamic_keys(self) -> None:
+        self.agent.add_key(self.alice_priv)
+        self.agent.add_key(self.bob_priv)
+        enc_file = self.tmpdir / "comp.senc"
+        self.run_cli(
+            ["encrypt", "-i", "-", "-o", str(enc_file), "--all-keys"],
+            stdin_bytes=b"completion test",
+        )
+
+        # Install symlink into temp bin_dir so bash completion script can call `ssh-agent-crypt`
+        fake_bin = self.tmpdir / "comp_bin"
+        self.run_cli(
+            [
+                "install",
+                "--no-sudo",
+                "--no-alias",
+                "--no-completion",
+                "--bin-dir",
+                str(fake_bin),
+            ]
+        )
+
+        # Generate bash & zsh completion scripts
+        bash_comp = self.run_cli(["completion", "bash", "--alias", "ssc"])
+        self.assertEqual(bash_comp.returncode, 0, bash_comp.stderr.decode())
+        self.assertIn("_ssh_agent_crypt_completions", bash_comp.stdout.decode())
+
+        zsh_comp = self.run_cli(["completion", "zsh", "--alias", "ssc"])
+        self.assertEqual(zsh_comp.returncode, 0, zsh_comp.stderr.decode())
+        self.assertIn("bashcompinit", zsh_comp.stdout.decode())
+
+        bash_env = os.environ.copy()
+        bash_env["PATH"] = f"{fake_bin}:{bash_env.get('PATH', '')}"
+        bash_env["SSH_AGENT_SOCK"] = str(self.agent.socket_path)
+        bash_env.pop("SSH_AUTH_SOCK", None)
+
+        def run_bash_complete(words: list[str], cword: int) -> list[str]:
+            words_lit = " ".join(f"'{w}'" for w in words)
+            script = (
+                'eval "$(ssh-agent-crypt completion bash --alias ssc)"\n'
+                f"COMP_WORDS=({words_lit})\n"
+                f"COMP_CWORD={cword}\n"
+                "_ssh_agent_crypt_completions\n"
+                'printf "%s\\n" "${COMPREPLY[@]}"\n'
+            )
+            r = subprocess.run(
+                ["bash", "-c", script],
+                env=bash_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+            return [line for line in r.stdout.decode().splitlines() if line]
+
+        # 1. Subcommand completion
+        subs = run_bash_complete(["ssc", "en"], 1)
+        self.assertEqual(subs, ["encrypt"])
+
+        # 2. Flag completion for remove-key
+        flags = run_bash_complete(["ssc", "remove-key", "--r"], 2)
+        self.assertEqual(flags, ["--rekey"])
+
+        # 3. Dynamic SSH agent key completion for `encrypt --key`
+        agent_cands = run_bash_complete(["ssc", "encrypt", "--key", "alice"], 3)
+        self.assertIn("alice-ed25519@test", agent_cands)
+
+        # 4. Dynamic file key-slot completion for `remove-key <file> --key` (works even with empty agent!)
+        self.agent.clear_keys()
+        file_cands = run_bash_complete(["ssc", "remove-key", str(enc_file), "--key", "bob"], 4)
+        self.assertIn("bob-ed25519@test", file_cands)
 
 
 if __name__ == "__main__":

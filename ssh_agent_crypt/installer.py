@@ -11,8 +11,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-ALIAS_BEGIN = "# >>> ssh-agent-crypt alias >>>"
-ALIAS_END = "# <<< ssh-agent-crypt alias <<<"
+BLOCK_BEGIN = "# >>> ssh-agent-crypt >>>"
+BLOCK_END = "# <<< ssh-agent-crypt <<<"
+LEGACY_ALIAS_BEGIN = "# >>> ssh-agent-crypt alias >>>"
+LEGACY_ALIAS_END = "# <<< ssh-agent-crypt alias <<<"
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
@@ -28,7 +30,8 @@ class InstallResult:
     bin_action: str
     bashrc_path: Path | None
     alias_name: str | None
-    alias_action: str
+    completion_enabled: bool
+    bashrc_action: str
     dry_run: bool
 
 
@@ -85,17 +88,40 @@ def _install_symlink_with_sudo(source: Path, target: Path) -> None:
         ) from exc
 
 
-def _update_bashrc_alias(
-    bashrc_path: Path,
-    alias_name: str,
+def _build_managed_bashrc_block(
     command_name: str,
+    alias_name: str | None,
+    enable_completion: bool,
+) -> str:
+    lines = [BLOCK_BEGIN]
+    if alias_name:
+        lines.append(f"alias {alias_name}='{command_name}'")
+    if enable_completion:
+        alias_arg = f" --alias {alias_name}" if alias_name else " --no-alias"
+        lines.append(f'if command -v {command_name} >/dev/null 2>&1; then')
+        lines.append(
+            f'    eval "$({command_name} completion bash --command {command_name}{alias_arg})"'
+        )
+        lines.append("fi")
+    lines.append(BLOCK_END)
+    return "\n".join(lines) + "\n"
+
+
+def _update_bashrc_block(
+    bashrc_path: Path,
+    command_name: str,
+    alias_name: str | None,
+    enable_completion: bool,
     *,
     force: bool = False,
     dry_run: bool = False,
 ) -> str:
-    """Idempotently add or update `alias <alias_name>='<command_name>'` in bashrc."""
-    alias_line = f"alias {alias_name}='{command_name}'"
-    managed_block = f"{ALIAS_BEGIN}\n{alias_line}\n{ALIAS_END}\n"
+    """Idempotently add or update the managed alias/completion block in bashrc."""
+    managed_block = _build_managed_bashrc_block(
+        command_name=command_name,
+        alias_name=alias_name,
+        enable_completion=enable_completion,
+    )
 
     if bashrc_path.exists():
         original = bashrc_path.read_text(encoding="utf-8")
@@ -104,8 +130,10 @@ def _update_bashrc_alias(
         original = ""
         mode = 0o644
 
+    # Match either current or legacy managed block
     block_re = re.compile(
-        rf"{re.escape(ALIAS_BEGIN)}\n.*?\n{re.escape(ALIAS_END)}\n?",
+        rf"(?:{re.escape(BLOCK_BEGIN)}|{re.escape(LEGACY_ALIAS_BEGIN)})\n.*?\n"
+        rf"(?:{re.escape(BLOCK_END)}|{re.escape(LEGACY_ALIAS_END)})\n?",
         re.DOTALL,
     )
     existing_block = block_re.search(original)
@@ -115,22 +143,24 @@ def _update_bashrc_alias(
         updated = block_re.sub(managed_block, original, count=1)
         action = "updated"
     else:
-        # Check for unmanaged alias with the same name
-        unmanaged_re = re.compile(
-            rf"^\s*alias\s+{re.escape(alias_name)}=(?P<rhs>.+?)\s*$",
-            re.MULTILINE,
-        )
-        match = unmanaged_re.search(original)
-        if match:
-            rhs = match.group("rhs").strip()
-            if rhs in (f"'{command_name}'", f'"{command_name}"', command_name):
-                return "unchanged"
-            if not force:
-                raise InstallError(
-                    f"Alias '{alias_name}' already exists in {bashrc_path} as: "
-                    f"{match.group(0).strip()}\n"
-                    "Use --force to add the managed alias anyway or choose another name with --alias."
-                )
+        # Check for conflicting unmanaged alias with the same name
+        if alias_name:
+            unmanaged_re = re.compile(
+                rf"^\s*alias\s+{re.escape(alias_name)}=(?P<rhs>.+?)\s*$",
+                re.MULTILINE,
+            )
+            match = unmanaged_re.search(original)
+            if match:
+                rhs = match.group("rhs").strip()
+                if rhs not in (f"'{command_name}'", f'"{command_name}"', command_name):
+                    if not force:
+                        raise InstallError(
+                            f"Alias '{alias_name}' already exists in {bashrc_path} as: "
+                            f"{match.group(0).strip()}\n"
+                            "Use --force to add the managed block anyway or choose another name with --alias."
+                        )
+                elif not enable_completion:
+                    return "unchanged"
 
         if original and not original.endswith("\n"):
             updated = original + "\n\n" + managed_block
@@ -171,12 +201,13 @@ def install_tool(
     command_name: str = "ssh-agent-crypt",
     bashrc_path: Path | None = Path("~/.bashrc"),
     alias_name: str | None = "ssc",
+    enable_completion: bool = True,
     use_sudo: bool | None = None,
     force: bool = False,
     dry_run: bool = False,
     source_script: Path | None = None,
 ) -> InstallResult:
-    """Install ssh-agent-crypt into `bin_dir` (via sudo if needed) and configure bashrc alias."""
+    """Install ssh-agent-crypt into `bin_dir` (via sudo if needed) and configure bashrc."""
     command_name = _validate_name(command_name, "command name")
     if alias_name is not None:
         alias_name = _validate_name(alias_name, "alias name")
@@ -210,17 +241,20 @@ def install_tool(
         bin_action = "linked"
 
     resolved_bashrc: Path | None = None
-    if bashrc_path is not None and alias_name is not None:
+    want_bashrc = bashrc_path is not None and (alias_name is not None or enable_completion)
+    if want_bashrc:
+        assert bashrc_path is not None
         resolved_bashrc = bashrc_path.expanduser()
-        alias_action = _update_bashrc_alias(
+        bashrc_action = _update_bashrc_block(
             resolved_bashrc,
-            alias_name,
-            command_name,
+            command_name=command_name,
+            alias_name=alias_name,
+            enable_completion=enable_completion,
             force=force,
             dry_run=dry_run,
         )
     else:
-        alias_action = "skipped"
+        bashrc_action = "skipped"
 
     return InstallResult(
         source_script=source,
@@ -229,6 +263,7 @@ def install_tool(
         bin_action=bin_action,
         bashrc_path=resolved_bashrc,
         alias_name=alias_name if resolved_bashrc is not None else None,
-        alias_action=alias_action,
+        completion_enabled=enable_completion and resolved_bashrc is not None,
+        bashrc_action=bashrc_action,
         dry_run=dry_run,
     )

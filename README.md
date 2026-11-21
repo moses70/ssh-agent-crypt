@@ -27,13 +27,13 @@ File encryption and decryption backed by a running SSH agent (`SSH_AGENT_SOCK` /
 - Python `cryptography` package
 - Running `ssh-agent` with `SSH_AGENT_SOCK` (or `SSH_AUTH_SOCK`) set
 
-## Installation (`/usr/local/bin` + `ssc` alias)
+## Installation (`/usr/local/bin` + `ssc` alias + Tab Completion)
 
 ```bash
 # Preview planned changes first (no files modified)
 ./ssh-agent-crypt install --dry-run
 
-# Symlink into /usr/local/bin (via sudo) and add alias 'ssc' to ~/.bashrc
+# Symlink into /usr/local/bin (via sudo) and add alias 'ssc' + Bash tab-completion to ~/.bashrc
 ./ssh-agent-crypt install
 source ~/.bashrc
 
@@ -42,13 +42,25 @@ ssh-agent-crypt --version
 ssc --version
 ```
 
+Tab completion works for both `ssh-agent-crypt` and the `ssc` alias, completing subcommands, flags, file paths, live SSH agent keys (for `--key` / `--unlock-key`), and authorized file key slots (for `remove-key <file> --key`).
+
 Additional `install` options:
 - `--bin-dir PATH` (default: `/usr/local/bin`)
 - `--name NAME` (default: `ssh-agent-crypt`)
 - `--bashrc PATH` (default: `~/.bashrc`)
 - `--alias NAME` (default: `ssc`) or `--no-alias`
+- `--no-completion` (skip adding Bash completion to `~/.bashrc`)
 - `--no-sudo` (e.g., when installing into `~/.local/bin`)
 - `--dry-run` (show planned actions without modifying anything)
+
+Manual completion setup (Bash or Zsh):
+```bash
+# Bash
+eval "$(ssh-agent-crypt completion bash --alias ssc)"
+
+# Zsh
+eval "$(ssh-agent-crypt completion zsh --alias ssc)"
+```
 
 ## Usage
 
@@ -244,7 +256,8 @@ Usage:
 │   ├── agent.py                  # Pure-Python SSH agent protocol client (SSH_AGENT_SOCK / SSH_AUTH_SOCK)
 │   ├── crypto.py                 # Envelope encryption, key slots, Header MAC, chunked AES-256-GCM
 │   ├── cli.py                    # CLI subcommands, atomic file writes, 0600 plaintext permissions
-│   └── installer.py              # Installer for /usr/local/bin (via sudo) and ~/.bashrc alias
+│   ├── completion.py             # Bash/Zsh tab-completion generator & dynamic key candidates
+│   └── installer.py              # Installer for /usr/local/bin (via sudo), alias & completion in ~/.bashrc
 ├── scripts/
 │   ├── run-tests.sh              # Runs the full automated test suite
 │   └── demo-workflow.sh          # Isolated end-to-end demo using a temporary ssh-agent

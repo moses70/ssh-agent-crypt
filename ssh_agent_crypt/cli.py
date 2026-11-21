@@ -43,6 +43,12 @@ from .crypto import (
     remove_keys_from_stream,
     unlock_dek,
 )
+from .completion import (
+    generate_bash_completion,
+    generate_zsh_completion,
+    query_agent_key_candidates,
+    query_file_key_candidates,
+)
 from .installer import InstallError, install_tool
 
 
@@ -466,11 +472,13 @@ def _cmd_rekey(args: argparse.Namespace) -> int:
 
 
 def _cmd_install(args: argparse.Namespace) -> int:
+    want_bashrc = not (args.no_alias and args.no_completion)
     result = install_tool(
         bin_dir=Path(args.bin_dir),
         command_name=args.name,
-        bashrc_path=None if args.no_alias else Path(args.bashrc),
+        bashrc_path=Path(args.bashrc) if want_bashrc else None,
         alias_name=None if args.no_alias else args.alias,
+        enable_completion=not args.no_completion,
         use_sudo=not args.no_sudo,
         force=args.force,
         dry_run=args.dry_run,
@@ -478,7 +486,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
 
     prefix = "[dry-run] " if result.dry_run else ""
     if result.dry_run:
-        _info(f"{prefix}Binary : {result.bin_action}", quiet=args.quiet)
+        _info(f"{prefix}Binary     : {result.bin_action}", quiet=args.quiet)
     else:
         sudo_note = " (via sudo)" if result.used_sudo else ""
         _info(
@@ -486,21 +494,46 @@ def _cmd_install(args: argparse.Namespace) -> int:
             quiet=args.quiet,
         )
 
-    if result.bashrc_path is not None and result.alias_name is not None:
+    if result.bashrc_path is not None:
+        features: list[str] = []
+        if result.alias_name:
+            features.append(f"alias '{result.alias_name}'")
+        if result.completion_enabled:
+            features.append("bash completion")
+        feature_desc = " + ".join(features)
         _info(
-            f"{prefix}Alias  : '{result.alias_name}' -> '{args.name}' in "
-            f"{result.bashrc_path} ({result.alias_action})",
+            f"{prefix}Shell rc   : {feature_desc} in {result.bashrc_path} ({result.bashrc_action})",
             quiet=args.quiet,
         )
-        if not result.dry_run and result.alias_action in ("added", "updated"):
+        if not result.dry_run and result.bashrc_action in ("added", "updated"):
             _info(
-                f"Run 'source {result.bashrc_path}' or open a new shell to activate alias '{result.alias_name}'.",
+                f"Run 'source {result.bashrc_path}' or open a new shell to activate changes.",
                 quiet=args.quiet,
             )
     else:
-        _info(f"{prefix}Alias  : skipped (--no-alias)", quiet=args.quiet)
+        _info(f"{prefix}Shell rc   : skipped (--no-alias --no-completion)", quiet=args.quiet)
 
     return 0
+
+
+def _cmd_completion(args: argparse.Namespace) -> int:
+    if args.query_agent_keys:
+        for item in query_agent_key_candidates(args.socket):
+            print(item)
+        return 0
+    if args.query_file_keys is not None:
+        for item in query_file_key_candidates(args.query_file_keys):
+            print(item)
+        return 0
+
+    alias = None if args.no_alias else args.alias
+    if args.shell == "bash":
+        sys.stdout.write(generate_bash_completion(command_name=args.command_name, alias_name=alias))
+        return 0
+    if args.shell == "zsh":
+        sys.stdout.write(generate_zsh_completion(command_name=args.command_name, alias_name=alias))
+        return 0
+    raise ValueError(f"Unsupported shell: {args.shell}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -712,7 +745,7 @@ def build_parser() -> argparse.ArgumentParser:
     # install
     p_inst = sub.add_parser(
         "install",
-        help="Install ssh-agent-crypt into /usr/local/bin (via sudo) and add alias 'ssc' to ~/.bashrc.",
+        help="Install ssh-agent-crypt into /usr/local/bin (via sudo) and configure alias 'ssc' + bash completion in ~/.bashrc.",
     )
     p_inst.add_argument(
         "--bin-dir",
@@ -730,7 +763,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--bashrc",
         default="~/.bashrc",
         metavar="PATH",
-        help="Shell rc file to receive the alias (default: ~/.bashrc).",
+        help="Shell rc file to receive the alias and completion (default: ~/.bashrc).",
     )
     p_inst.add_argument(
         "--alias",
@@ -742,6 +775,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-alias",
         action="store_true",
         help="Skip adding the shell alias to ~/.bashrc.",
+    )
+    p_inst.add_argument(
+        "--no-completion",
+        action="store_true",
+        help="Skip adding bash tab-completion to ~/.bashrc.",
     )
     p_inst.add_argument(
         "--no-sudo",
@@ -757,9 +795,51 @@ def build_parser() -> argparse.ArgumentParser:
         "-f",
         "--force",
         action="store_true",
-        help="Add managed alias even if an unmanaged alias with the same name exists.",
+        help="Add managed block even if an unmanaged alias with the same name exists.",
     )
     p_inst.set_defaults(func=_cmd_install)
+
+    # completion
+    p_comp = sub.add_parser(
+        "completion",
+        help="Generate shell tab-completion script (bash or zsh).",
+    )
+    p_comp.add_argument(
+        "shell",
+        nargs="?",
+        default="bash",
+        choices=("bash", "zsh"),
+        help="Target shell (default: bash).",
+    )
+    p_comp.add_argument(
+        "--command",
+        dest="command_name",
+        default="ssh-agent-crypt",
+        metavar="NAME",
+        help="Primary command name to register completion for (default: ssh-agent-crypt).",
+    )
+    p_comp.add_argument(
+        "--alias",
+        default="ssc",
+        metavar="NAME",
+        help="Additional alias name to register completion for (default: ssc).",
+    )
+    p_comp.add_argument(
+        "--no-alias",
+        action="store_true",
+        help="Do not register completion for an alias.",
+    )
+    p_comp.add_argument(
+        "--query-agent-keys",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    p_comp.add_argument(
+        "--query-file-keys",
+        metavar="PATH",
+        help=argparse.SUPPRESS,
+    )
+    p_comp.set_defaults(func=_cmd_completion)
 
     return parser
 
