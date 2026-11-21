@@ -771,6 +771,59 @@ class TestSSHAgentCrypt(unittest.TestCase):
         file_cands = run_bash_complete(["ssc", "remove-key", str(enc_file), "--key", "bob"], 4)
         self.assertIn("bob-ed25519@test", file_cands)
 
+    def test_quiet_and_socket_flags_before_and_after_subcommand(self) -> None:
+        self.agent.add_key(self.alice_priv)
+        secret = b"quiet mode verification payload"
+        enc_file = self.tmpdir / "quiet.senc"
+
+        # 1. -q / --quiet AFTER subcommand suppresses stderr completely
+        enc = self.run_cli(
+            ["encrypt", "-q", "-i", "-", "-o", str(enc_file)],
+            stdin_bytes=secret,
+        )
+        self.assertEqual(enc.returncode, 0, enc.stderr.decode())
+        self.assertEqual(enc.stderr, b"")
+
+        # 2. --quiet AFTER decrypt (exact Ansible/SOPS command pattern!)
+        dec_after = self.run_cli(
+            ["decrypt", "--quiet", "-i", str(enc_file), "-o", "-"]
+        )
+        self.assertEqual(dec_after.returncode, 0, dec_after.stderr.decode())
+        self.assertEqual(dec_after.stdout, secret)
+        self.assertEqual(dec_after.stderr, b"")
+
+        # 3. -q BEFORE subcommand still works and is not overwritten by subparser
+        dec_before = self.run_cli(
+            ["-q", "decrypt", "-i", str(enc_file), "-o", "-"]
+        )
+        self.assertEqual(dec_before.returncode, 0, dec_before.stderr.decode())
+        self.assertEqual(dec_before.stdout, secret)
+        self.assertEqual(dec_before.stderr, b"")
+
+        # 4. --socket AFTER subcommand overrides env vars cleanly
+        dec_sock_after = self.run_cli(
+            [
+                "decrypt",
+                "-q",
+                "--socket",
+                str(self.agent.socket_path),
+                "-i",
+                str(enc_file),
+                "-o",
+                "-",
+            ],
+            use_agent_sock_env=False,
+            use_auth_sock_env=False,
+        )
+        self.assertEqual(dec_sock_after.returncode, 0, dec_sock_after.stderr.decode())
+        self.assertEqual(dec_sock_after.stdout, secret)
+        self.assertEqual(dec_sock_after.stderr, b"")
+
+        # 5. verify -q suppresses stderr
+        ver = self.run_cli(["verify", "-q", str(enc_file)])
+        self.assertEqual(ver.returncode, 0, ver.stderr.decode())
+        self.assertEqual(ver.stderr, b"")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

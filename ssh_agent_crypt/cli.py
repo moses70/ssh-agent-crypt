@@ -559,19 +559,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="Suppress informational messages on stderr.",
     )
 
+    # Shared options also accepted after any subcommand without clobbering root values
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--socket",
+        default=argparse.SUPPRESS,
+        metavar="PATH",
+        help="Path to SSH agent Unix socket (overrides SSH_AGENT_SOCK and SSH_AUTH_SOCK).",
+    )
+    common.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Suppress informational messages on stderr.",
+    )
+
     sub = parser.add_subparsers(dest="command", required=True)
 
     # agent-keys
     p_ak = sub.add_parser(
         "agent-keys",
         aliases=["list-agent-keys"],
+        parents=[common],
         help="List SSH keys currently loaded in the SSH agent.",
     )
     p_ak.add_argument("--json", action="store_true", help="Output as JSON.")
     p_ak.set_defaults(func=_cmd_agent_keys)
 
     # encrypt
-    p_enc = sub.add_parser("encrypt", help="Encrypt a file (or stdin) for one or more SSH keys.")
+    p_enc = sub.add_parser(
+        "encrypt",
+        parents=[common],
+        help="Encrypt a file (or stdin) for one or more SSH keys.",
+    )
     p_enc.add_argument(
         "-i", "--input", default="-", metavar="PATH", help="Input file path, or '-' for stdin."
     )
@@ -604,7 +625,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_enc.set_defaults(func=_cmd_encrypt)
 
     # decrypt
-    p_dec = sub.add_parser("decrypt", help="Decrypt a file (or stdin) using a loaded SSH key.")
+    p_dec = sub.add_parser(
+        "decrypt",
+        parents=[common],
+        help="Decrypt a file (or stdin) using a loaded SSH key.",
+    )
     p_dec.add_argument(
         "-i", "--input", default="-", metavar="PATH", help="Encrypted input file, or '-' for stdin."
     )
@@ -626,6 +651,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_info = sub.add_parser(
         "info",
         aliases=["list-keys"],
+        parents=[common],
         help="Show container metadata and authorized SSH key slots.",
     )
     p_info.add_argument("file", help="Encrypted file path, or '-' for stdin.")
@@ -640,6 +666,7 @@ def build_parser() -> argparse.ArgumentParser:
     # verify
     p_ver = sub.add_parser(
         "verify",
+        parents=[common],
         help="Verify header MAC and all encrypted payload chunks without writing plaintext.",
     )
     p_ver.add_argument("file", help="Encrypted file path, or '-' for stdin.")
@@ -654,6 +681,7 @@ def build_parser() -> argparse.ArgumentParser:
     # add-key
     p_add = sub.add_parser(
         "add-key",
+        parents=[common],
         help="Add one or more SSH keys from the agent to an existing encrypted file.",
     )
     p_add.add_argument("file", help="Encrypted file to update.")
@@ -686,6 +714,7 @@ def build_parser() -> argparse.ArgumentParser:
     # remove-key
     p_rem = sub.add_parser(
         "remove-key",
+        parents=[common],
         help="Remove one or more authorized SSH keys from an encrypted file.",
     )
     p_rem.add_argument("file", help="Encrypted file to update.")
@@ -721,6 +750,7 @@ def build_parser() -> argparse.ArgumentParser:
     # rekey
     p_rk = sub.add_parser(
         "rekey",
+        parents=[common],
         help="Rotate the DEK and re-encrypt the payload for authorized keys.",
     )
     p_rk.add_argument("file", help="Encrypted file to rekey.")
@@ -745,6 +775,7 @@ def build_parser() -> argparse.ArgumentParser:
     # install
     p_inst = sub.add_parser(
         "install",
+        parents=[common],
         help="Install ssh-agent-crypt into /usr/local/bin (via sudo) and configure alias 'ssc' + bash completion in ~/.bashrc.",
     )
     p_inst.add_argument(
@@ -802,6 +833,7 @@ def build_parser() -> argparse.ArgumentParser:
     # completion
     p_comp = sub.add_parser(
         "completion",
+        parents=[common],
         help="Generate shell tab-completion script (bash or zsh).",
     )
     p_comp.add_argument(

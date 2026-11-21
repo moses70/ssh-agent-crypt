@@ -192,37 +192,38 @@ _ssh_agent_crypt_completions() {{
     esac
 
     local opts=""
+    local shared_opts="-q --quiet --socket -h --help"
     case "${{subcmd}}" in
         agent-keys|list-agent-keys)
-            opts="--json -h --help"
+            opts="--json ${{shared_opts}}"
             ;;
         encrypt)
-            opts="-i --input -o --output -k --key -a --all-keys --chunk-size -f --force -h --help"
+            opts="-i --input -o --output -k --key -a --all-keys --chunk-size -f --force ${{shared_opts}}"
             ;;
         decrypt)
-            opts="-i --input -o --output -k --key -f --force -h --help"
+            opts="-i --input -o --output -k --key -f --force ${{shared_opts}}"
             ;;
         info|list-keys)
-            opts="--verify --json -h --help"
+            opts="--verify --json ${{shared_opts}}"
             ;;
         verify)
-            opts="-k --key -h --help"
+            opts="-k --key ${{shared_opts}}"
             ;;
         add-key)
-            opts="-k --key -a --all-keys --unlock-key -o --output -f --force -h --help"
+            opts="-k --key -a --all-keys --unlock-key -o --output -f --force ${{shared_opts}}"
             ;;
         remove-key)
-            opts="-k --key --unlock-key --rekey -o --output -f --force -h --help"
+            opts="-k --key --unlock-key --rekey -o --output -f --force ${{shared_opts}}"
             ;;
         rekey)
-            opts="--unlock-key --drop-missing -o --output -f --force -h --help"
+            opts="--unlock-key --drop-missing -o --output -f --force ${{shared_opts}}"
             ;;
         install)
-            opts="--bin-dir --name --bashrc --alias --no-alias --no-completion --no-sudo --dry-run -f --force -h --help"
+            opts="--bin-dir --name --bashrc --alias --no-alias --no-completion --no-sudo --dry-run -f --force ${{shared_opts}}"
             ;;
         completion)
             if [[ "${{cur}}" == -* ]]; then
-                opts="--alias --command -h --help"
+                opts="--alias --no-alias --command ${{shared_opts}}"
             else
                 COMPREPLY=( $(compgen -W "bash zsh" -- "${{cur}}") )
                 return 0
