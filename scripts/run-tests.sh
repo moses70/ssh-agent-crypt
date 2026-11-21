@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+
+cd "${REPO_ROOT}"
+echo "Running ssh-agent-crypt test suite in ${REPO_ROOT}..."
+python3 -m unittest discover -s tests -p "test_*.py" -v
